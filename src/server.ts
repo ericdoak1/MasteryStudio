@@ -106,17 +106,25 @@ export function createMasteryServer(config: Config) {
     let streamSid = "";
     let caller = "";
     let openAiReady = false;
-    const pendingAudio: string[] = [];
+    const pendingOpenAiEvents: unknown[] = [];
 
     const openAiWs = new WebSocket(
       `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(config.openAiModel)}`,
       { headers: { Authorization: `Bearer ${config.openAiApiKey}` } }
     );
 
+    const sendToOpenAi = (event: unknown): void => {
+      if (openAiReady && openAiWs.readyState === WebSocket.OPEN) {
+        safeSend(openAiWs, event);
+      } else {
+        pendingOpenAiEvents.push(event);
+      }
+    };
+
     openAiWs.on("open", () => {
       openAiReady = true;
-      for (const audio of pendingAudio.splice(0)) {
-        safeSend(openAiWs, { type: "input_audio_buffer.append", audio });
+      for (const event of pendingOpenAiEvents.splice(0)) {
+        safeSend(openAiWs, event);
       }
     });
 
@@ -128,7 +136,7 @@ export function createMasteryServer(config: Config) {
         streamSid = event.start?.streamSid ?? event.streamSid ?? "";
         caller = event.start?.customParameters?.caller ?? "";
         const context = await fetchMemberContext(config, caller);
-        safeSend(openAiWs, {
+        sendToOpenAi({
           type: "session.update",
           session: {
             type: "realtime",
@@ -151,7 +159,7 @@ export function createMasteryServer(config: Config) {
             instructions: promptWithContext(context)
           }
         });
-        safeSend(openAiWs, {
+        sendToOpenAi({
           type: "conversation.item.create",
           item: {
             type: "message",
@@ -159,12 +167,11 @@ export function createMasteryServer(config: Config) {
             content: [{ type: "input_text", text: "The phone call just connected. Greet the caller now and begin." }]
           }
         });
-        safeSend(openAiWs, { type: "response.create" });
+        sendToOpenAi({ type: "response.create" });
       }
 
       if (event.event === "media" && typeof event.media?.payload === "string") {
-        if (openAiReady) safeSend(openAiWs, { type: "input_audio_buffer.append", audio: event.media.payload });
-        else pendingAudio.push(event.media.payload);
+        sendToOpenAi({ type: "input_audio_buffer.append", audio: event.media.payload });
       }
 
       if (event.event === "stop") openAiWs.close();
@@ -190,8 +197,8 @@ export function createMasteryServer(config: Config) {
     twilioWs.on("error", (error) => console.error("Twilio stream error:", error));
     openAiWs.on("error", (error) => console.error("OpenAI socket error:", error));
     twilioWs.on("close", closeBoth);
-    openAiWs.on("close", () => {
-      console.info("Call bridge closed", { caller, streamSid });
+    openAiWs.on("close", (code, reason) => {
+      console.info("Call bridge closed", { caller, streamSid, code, reason: reason.toString() });
       closeBoth();
     });
   });
