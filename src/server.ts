@@ -5,6 +5,7 @@ import twilio from "twilio";
 import { loadConfig, type Config } from "./config.js";
 import { promptWithContext } from "./mastery-prompt.js";
 import { buildVoiceTwiml } from "./twiml.js";
+import { parseLinqMessage, processLinqMessage, verifyLinqSignature } from "./linq.js";
 
 type JsonObject = Record<string, any>;
 
@@ -77,6 +78,19 @@ export function createMasteryServer(config: Config) {
       });
       res.writeHead(200, { "content-type": "text/xml; charset=utf-8" });
       return res.end(twiml);
+    }
+
+    if (req.method === "POST" && path === "/linq/webhook") {
+      const rawBody = await readBody(req);
+      if (!verifyLinqSignature(rawBody, req.headers, config.linqWebhookSecret)) {
+        return sendJson(res, 401, { error: "Invalid Linq signature" });
+      }
+      let body: JsonObject;
+      try { body = JSON.parse(rawBody); } catch { return sendJson(res, 400, { error: "Invalid JSON" }); }
+      const message = parseLinqMessage(body, req.headers);
+      sendJson(res, 200, { received: true });
+      if (message) processLinqMessage(config, message).catch((error) => console.error("Linq message failed:", error));
+      return;
     }
 
     sendJson(res, 404, { error: "Not found" });
