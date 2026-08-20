@@ -1,0 +1,193 @@
+import "dotenv/config";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { WebSocket, WebSocketServer } from "ws";
+import twilio from "twilio";
+import { loadConfig, type Config } from "./config.js";
+import { promptWithContext } from "./mastery-prompt.js";
+import { buildVoiceTwiml } from "./twiml.js";
+
+type JsonObject = Record<string, any>;
+
+function sendJson(res: ServerResponse, status: number, value: unknown): void {
+  res.writeHead(status, { "content-type": "application/json" });
+  res.end(JSON.stringify(value));
+}
+
+async function readBody(req: IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) chunks.push(Buffer.from(chunk));
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+async function fetchMemberContext(config: Config, phone?: string): Promise<Record<string, unknown>> {
+  if (!config.masteryProfileUrl || !phone) return {};
+  try {
+    const url = new URL(config.masteryProfileUrl);
+    url.searchParams.set("phone", phone);
+    const response = await fetch(url, {
+      headers: config.masteryProfileToken
+        ? { authorization: `Bearer ${config.masteryProfileToken}` }
+        : undefined,
+      signal: AbortSignal.timeout(3000)
+    });
+    if (!response.ok) throw new Error(`profile endpoint returned ${response.status}`);
+    return (await response.json()) as Record<string, unknown>;
+  } catch (error) {
+    console.warn("Member context unavailable:", error);
+    return {};
+  }
+}
+
+function safeSend(socket: WebSocket, event: unknown): void {
+  if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(event));
+}
+
+function validateTwilioWebhook(config: Config, req: IncomingMessage, params: URLSearchParams): boolean {
+  if (!config.twilioAuthToken) return true;
+  const signature = req.headers["x-twilio-signature"];
+  if (typeof signature !== "string") return false;
+  const values = Object.fromEntries(params.entries());
+  return twilio.validateRequest(
+    config.twilioAuthToken,
+    signature,
+    `${config.publicBaseUrl}${req.url ?? "/voice/incoming"}`,
+    values
+  );
+}
+
+export function createMasteryServer(config: Config) {
+  const mediaWss = new WebSocketServer({ noServer: true });
+
+  const server = createServer(async (req, res) => {
+    const path = new URL(req.url ?? "/", "http://localhost").pathname;
+    if (req.method === "GET" && path === "/health") {
+      return sendJson(res, 200, { ok: true, service: "mastery-voice-agent" });
+    }
+
+    if (req.method === "POST" && path === "/voice/incoming") {
+      const rawBody = await readBody(req);
+      const params = new URLSearchParams(rawBody);
+      if (!validateTwilioWebhook(config, req, params)) {
+        return sendJson(res, 403, { error: "Invalid Twilio signature" });
+      }
+      const twiml = buildVoiceTwiml(config.publicBaseUrl, {
+        caller: params.get("From") ?? "",
+        called: params.get("To") ?? "",
+        callSid: params.get("CallSid") ?? ""
+      });
+      res.writeHead(200, { "content-type": "text/xml; charset=utf-8" });
+      return res.end(twiml);
+    }
+
+    sendJson(res, 404, { error: "Not found" });
+  });
+
+  server.on("upgrade", (req, socket, head) => {
+    const path = new URL(req.url ?? "/", "http://localhost").pathname;
+    if (path !== "/voice/media") return socket.destroy();
+    mediaWss.handleUpgrade(req, socket, head, (ws) => mediaWss.emit("connection", ws, req));
+  });
+
+  mediaWss.on("connection", (twilioWs) => {
+    let streamSid = "";
+    let caller = "";
+    let openAiReady = false;
+    const pendingAudio: string[] = [];
+
+    const openAiWs = new WebSocket(
+      `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(config.openAiModel)}`,
+      { headers: { Authorization: `Bearer ${config.openAiApiKey}` } }
+    );
+
+    openAiWs.on("open", () => {
+      openAiReady = true;
+      for (const audio of pendingAudio.splice(0)) {
+        safeSend(openAiWs, { type: "input_audio_buffer.append", audio });
+      }
+    });
+
+    twilioWs.on("message", async (raw) => {
+      let event: JsonObject;
+      try { event = JSON.parse(raw.toString()); } catch { return; }
+
+      if (event.event === "start") {
+        streamSid = event.start?.streamSid ?? event.streamSid ?? "";
+        caller = event.start?.customParameters?.caller ?? "";
+        const context = await fetchMemberContext(config, caller);
+        safeSend(openAiWs, {
+          type: "session.update",
+          session: {
+            type: "realtime",
+            model: config.openAiModel,
+            output_modalities: ["audio"],
+            audio: {
+              input: {
+                format: { type: "audio/pcmu" },
+                turn_detection: {
+                  type: "server_vad",
+                  threshold: 0.5,
+                  prefix_padding_ms: 300,
+                  silence_duration_ms: 500,
+                  create_response: true,
+                  interrupt_response: true
+                }
+              },
+              output: { format: { type: "audio/pcmu" }, voice: config.openAiVoice }
+            },
+            instructions: promptWithContext(context)
+          }
+        });
+        safeSend(openAiWs, {
+          type: "conversation.item.create",
+          item: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "The phone call just connected. Greet the caller now and begin." }]
+          }
+        });
+        safeSend(openAiWs, { type: "response.create" });
+      }
+
+      if (event.event === "media" && typeof event.media?.payload === "string") {
+        if (openAiReady) safeSend(openAiWs, { type: "input_audio_buffer.append", audio: event.media.payload });
+        else pendingAudio.push(event.media.payload);
+      }
+
+      if (event.event === "stop") openAiWs.close();
+    });
+
+    openAiWs.on("message", (raw) => {
+      let event: JsonObject;
+      try { event = JSON.parse(raw.toString()); } catch { return; }
+
+      if (event.type === "response.output_audio.delta" && event.delta && streamSid) {
+        safeSend(twilioWs, { event: "media", streamSid, media: { payload: event.delta } });
+      }
+      if (event.type === "input_audio_buffer.speech_started" && streamSid) {
+        safeSend(twilioWs, { event: "clear", streamSid });
+      }
+      if (event.type === "error") console.error("OpenAI Realtime error:", event.error);
+    });
+
+    const closeBoth = () => {
+      if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close();
+      if (openAiWs.readyState === WebSocket.OPEN) openAiWs.close();
+    };
+    twilioWs.on("error", (error) => console.error("Twilio stream error:", error));
+    openAiWs.on("error", (error) => console.error("OpenAI socket error:", error));
+    twilioWs.on("close", closeBoth);
+    openAiWs.on("close", () => {
+      console.info("Call bridge closed", { caller, streamSid });
+      closeBoth();
+    });
+  });
+
+  return server;
+}
+
+if (process.env.NODE_ENV !== "test") {
+  const config = loadConfig();
+  createMasteryServer(config).listen(config.port, "0.0.0.0", () => {
+    console.info(`Mastery voice agent listening on port ${config.port}`);
+  });
+}
