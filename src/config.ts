@@ -7,6 +7,9 @@ export type Config = {
   twilioAuthToken?: string;
   masteryProfileUrl?: string;
   masteryProfileToken?: string;
+  linqApiToken?: string;
+  linqWebhookSecret?: string;
+  openAiTextModel: string;
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -28,6 +31,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     openAiVoice: env.OPENAI_VOICE ?? "marin",
     twilioAuthToken: env.TWILIO_AUTH_TOKEN || undefined,
     masteryProfileUrl: env.MASTERY_PROFILE_URL || undefined,
-    masteryProfileToken: env.MASTERY_PROFILE_TOKEN || undefined
+    masteryProfileToken: env.MASTERY_PROFILE_TOKEN || undefined,
+    linqApiToken: env.LINQ_API_TOKEN || undefined,
+    linqWebhookSecret: env.LINQ_WEBHOOK_SECRET || undefined,
+    openAiTextModel: env.OPENAI_TEXT_MODEL ?? "gpt-5-mini"
   };
 }
