@@ -4,7 +4,10 @@ export type Config = {
   openAiApiKey: string;
   openAiModel: string;
   openAiVoice: string;
+  twilioAccountSid?: string;
   twilioAuthToken?: string;
+  twilioFromNumber?: string;
+  outboundApiKey?: string;
   masteryProfileUrl?: string;
   masteryProfileToken?: string;
   linqApiToken?: string;
@@ -29,7 +32,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     openAiApiKey: env.OPENAI_API_KEY!,
     openAiModel: env.OPENAI_REALTIME_MODEL ?? "gpt-realtime-2.1",
     openAiVoice: env.OPENAI_VOICE ?? "marin",
+    twilioAccountSid: env.TWILIO_ACCOUNT_SID || undefined,
     twilioAuthToken: env.TWILIO_AUTH_TOKEN || undefined,
+    twilioFromNumber: env.TWILIO_FROM_NUMBER || undefined,
+    outboundApiKey: env.OUTBOUND_API_KEY || undefined,
     masteryProfileUrl: env.MASTERY_PROFILE_URL || undefined,
     masteryProfileToken: env.MASTERY_PROFILE_TOKEN || undefined,
     linqApiToken: env.LINQ_API_TOKEN || undefined,

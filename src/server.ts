@@ -65,6 +65,38 @@ export function createMasteryServer(config: Config) {
       return sendJson(res, 200, { ok: true, service: "mastery-voice-agent" });
     }
 
+    if (req.method === "POST" && path === "/voice/outbound") {
+      if (!config.twilioAccountSid || !config.twilioAuthToken || !config.twilioFromNumber || !config.outboundApiKey) {
+        return sendJson(res, 503, { error: "Outbound calling is not configured" });
+      }
+      if (req.headers.authorization !== `Bearer ${config.outboundApiKey}`) {
+        return sendJson(res, 401, { error: "Unauthorized" });
+      }
+      let body: { to?: string; task?: string; agentPrompt?: string };
+      try { body = JSON.parse(await readBody(req)); } catch { return sendJson(res, 400, { error: "Invalid JSON" }); }
+      const to = body.to?.trim();
+      const task = body.task?.trim();
+      const agentPrompt = body.agentPrompt?.trim();
+      if (!to || !task || !agentPrompt) return sendJson(res, 400, { error: "to, task, and agentPrompt are required" });
+      try {
+        const client = twilio(config.twilioAccountSid, config.twilioAuthToken);
+        const call = await client.calls.create({
+          to,
+          from: config.twilioFromNumber,
+          twiml: buildVoiceTwiml(config.publicBaseUrl, {
+            caller: to,
+            direction: "outbound",
+            task,
+            agentPrompt
+          })
+        });
+        return sendJson(res, 202, { callSid: call.sid, status: call.status });
+      } catch (error) {
+        console.error("Outbound call failed:", error);
+        return sendJson(res, 502, { error: error instanceof Error ? error.message : "Outbound call failed" });
+      }
+    }
+
     if (req.method === "POST" && path === "/voice/incoming") {
       const rawBody = await readBody(req);
       const params = new URLSearchParams(rawBody);
@@ -135,6 +167,8 @@ export function createMasteryServer(config: Config) {
       if (event.event === "start") {
         streamSid = event.start?.streamSid ?? event.streamSid ?? "";
         caller = event.start?.customParameters?.caller ?? "";
+        const task = event.start?.customParameters?.task ?? "";
+        const agentPrompt = event.start?.customParameters?.agentPrompt ?? "";
         const context = await fetchMemberContext(config, caller);
         sendToOpenAi({
           type: "session.update",
@@ -156,7 +190,9 @@ export function createMasteryServer(config: Config) {
               },
               output: { format: { type: "audio/pcmu" }, voice: config.openAiVoice }
             },
-            instructions: promptWithContext(context)
+            instructions: agentPrompt
+              ? `${agentPrompt}\n\nYour assignment for this call:\n${task}`
+              : promptWithContext(context)
           }
         });
         sendToOpenAi({
