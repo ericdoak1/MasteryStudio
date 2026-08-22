@@ -68,7 +68,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     masteryProfileUrl: env.MASTERY_PROFILE_URL || undefined, masteryProfileToken: env.MASTERY_PROFILE_TOKEN || undefined,
     masteryStudioContextUrl: env.MASTERY_STUDIO_CONTEXT_URL || undefined, masteryStudioContextToken: env.MASTERY_STUDIO_CONTEXT_TOKEN || undefined,
     linqApiToken: env.LINQ_API_TOKEN || undefined, linqWebhookSecret: env.LINQ_WEBHOOK_SECRET || undefined,
-    linqPhoneNumber: env.MASTERY_LINQ_PHONE_NUMBER?.trim() || undefined,
+    linqPhoneNumber: env.MASTERY_LINQ_PHONE_NUMBER?.trim() || "+16462077638",
     linqReplyMode: parseReplyMode(env.LINQ_REPLY_MODE),
     linqVoiceSendTranscript: parseBoolean(env.LINQ_VOICE_SEND_TRANSCRIPT, false, "LINQ_VOICE_SEND_TRANSCRIPT"),
     linqVoiceMaxCharacters: parsePositiveInteger(env.LINQ_VOICE_MAX_CHARACTERS, 600, "LINQ_VOICE_MAX_CHARACTERS"),
