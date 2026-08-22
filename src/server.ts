@@ -6,6 +6,8 @@ import { loadConfig, type Config } from "./config.js";
 import { fetchMemberContext } from "./member-context.js";
 import { promptWithContext } from "./mastery-prompt.js";
 import { buildVoiceTwiml } from "./twiml.js";
+import { handleStudioApi } from "./studio-api.js";
+import { initializeStudioStore } from "./studio-store.js";
 import {
   CommandCenterInputError,
   parseLinqMessage,
@@ -43,11 +45,8 @@ async function readBody(req: IncomingMessage): Promise<string> {
 }
 
 function sendBodyError(res: ServerResponse, error: unknown): void {
-  if (error instanceof RequestBodyTooLargeError) {
-    sendJson(res, 413, { error: error.message });
-  } else {
-    sendJson(res, 400, { error: "Invalid JSON" });
-  }
+  if (error instanceof RequestBodyTooLargeError) sendJson(res, 413, { error: error.message });
+  else sendJson(res, 400, { error: "Invalid JSON" });
 }
 
 function safeSend(socket: WebSocket, event: unknown): void {
@@ -71,18 +70,24 @@ export function createMasteryServer(config: Config) {
   const mediaWss = new WebSocketServer({ noServer: true });
 
   const server = createServer(async (req, res) => {
-    const path = new URL(req.url ?? "/", "http://localhost").pathname;
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const path = url.pathname;
     if (req.method === "GET" && path === "/health") {
-      return sendJson(res, 200, { ok: true, service: "mastery-voice-agent" });
+      return sendJson(res, 200, { ok: true, service: "mastery-voice-agent", studioDatabase: Boolean(config.databaseUrl) });
+    }
+
+    try {
+      if (await handleStudioApi(config, req, res, url)) return;
+    } catch (error) {
+      console.error("Studio API failed:", error);
+      return sendJson(res, 500, { error: "Studio API failed" });
     }
 
     if (req.method === "POST" && path === "/voice/outbound") {
       if (!config.twilioAccountSid || !config.twilioAuthToken || !config.twilioFromNumber || !config.outboundApiKey) {
         return sendJson(res, 503, { error: "Outbound calling is not configured" });
       }
-      if (req.headers.authorization !== `Bearer ${config.outboundApiKey}`) {
-        return sendJson(res, 401, { error: "Unauthorized" });
-      }
+      if (req.headers.authorization !== `Bearer ${config.outboundApiKey}`) return sendJson(res, 401, { error: "Unauthorized" });
       let body: { to?: string; task?: string; agentPrompt?: string };
       try { body = JSON.parse(await readBody(req)); } catch (error) { return sendBodyError(res, error); }
       const to = body.to?.trim();
@@ -94,12 +99,7 @@ export function createMasteryServer(config: Config) {
         const call = await client.calls.create({
           to,
           from: config.twilioFromNumber,
-          twiml: buildVoiceTwiml(config.publicBaseUrl, {
-            caller: to,
-            direction: "outbound",
-            task,
-            agentPrompt
-          })
+          twiml: buildVoiceTwiml(config.publicBaseUrl, { caller: to, direction: "outbound", task, agentPrompt })
         });
         return sendJson(res, 202, { callSid: call.sid, status: call.status });
       } catch (error) {
@@ -112,9 +112,7 @@ export function createMasteryServer(config: Config) {
       let rawBody: string;
       try { rawBody = await readBody(req); } catch (error) { return sendBodyError(res, error); }
       const params = new URLSearchParams(rawBody);
-      if (!validateTwilioWebhook(config, req, params)) {
-        return sendJson(res, 403, { error: "Invalid Twilio signature" });
-      }
+      if (!validateTwilioWebhook(config, req, params)) return sendJson(res, 403, { error: "Invalid Twilio signature" });
       const twiml = buildVoiceTwiml(config.publicBaseUrl, {
         caller: params.get("From") ?? "",
         called: params.get("To") ?? "",
@@ -125,37 +123,25 @@ export function createMasteryServer(config: Config) {
     }
 
     if (req.method === "POST" && path === "/linq/send") {
-      if (!config.linqApiToken || !config.outboundApiKey) {
-        return sendJson(res, 503, { error: "Command Center messaging is not configured" });
-      }
-      if (req.headers.authorization !== `Bearer ${config.outboundApiKey}`) {
-        return sendJson(res, 401, { error: "Unauthorized" });
-      }
+      if (!config.linqApiToken || !config.outboundApiKey) return sendJson(res, 503, { error: "Command Center messaging is not configured" });
+      if (req.headers.authorization !== `Bearer ${config.outboundApiKey}`) return sendJson(res, 401, { error: "Unauthorized" });
       let body: CommandCenterLinqRequest;
       try { body = JSON.parse(await readBody(req)); } catch (error) { return sendBodyError(res, error); }
       try {
         const result = await sendCommandCenterLinqMessage(config, body);
         return sendJson(res, 200, result);
       } catch (error) {
-        if (error instanceof CommandCenterInputError) {
-          return sendJson(res, 400, { error: error.message });
-        }
+        if (error instanceof CommandCenterInputError) return sendJson(res, 400, { error: error.message });
         console.error("Command Center message failed:", error);
-        return sendJson(res, 502, {
-          error: error instanceof Error ? error.message : "Command Center message failed"
-        });
+        return sendJson(res, 502, { error: error instanceof Error ? error.message : "Command Center message failed" });
       }
     }
 
     if (req.method === "POST" && path === "/linq/webhook") {
-      if (!config.linqApiToken || !config.linqWebhookSecret) {
-        return sendJson(res, 503, { error: "Linq webhook verification is not configured" });
-      }
+      if (!config.linqApiToken || !config.linqWebhookSecret) return sendJson(res, 503, { error: "Linq webhook verification is not configured" });
       let rawBody: string;
       try { rawBody = await readBody(req); } catch (error) { return sendBodyError(res, error); }
-      if (!verifyLinqSignature(rawBody, req.headers, config.linqWebhookSecret)) {
-        return sendJson(res, 401, { error: "Invalid Linq signature" });
-      }
+      if (!verifyLinqSignature(rawBody, req.headers, config.linqWebhookSecret)) return sendJson(res, 401, { error: "Invalid Linq signature" });
       let body: JsonObject;
       try { body = JSON.parse(rawBody); } catch { return sendJson(res, 400, { error: "Invalid JSON" }); }
       const message = parseLinqMessage(body, req.headers);
@@ -185,18 +171,13 @@ export function createMasteryServer(config: Config) {
     );
 
     const sendToOpenAi = (event: unknown): void => {
-      if (openAiReady && openAiWs.readyState === WebSocket.OPEN) {
-        safeSend(openAiWs, event);
-      } else {
-        pendingOpenAiEvents.push(event);
-      }
+      if (openAiReady && openAiWs.readyState === WebSocket.OPEN) safeSend(openAiWs, event);
+      else pendingOpenAiEvents.push(event);
     };
 
     openAiWs.on("open", () => {
       openAiReady = true;
-      for (const event of pendingOpenAiEvents.splice(0)) {
-        safeSend(openAiWs, event);
-      }
+      for (const event of pendingOpenAiEvents.splice(0)) safeSend(openAiWs, event);
     });
 
     twilioWs.on("message", async (raw) => {
@@ -229,9 +210,7 @@ export function createMasteryServer(config: Config) {
               },
               output: { format: { type: "audio/pcmu" }, voice: config.openAiVoice }
             },
-            instructions: agentPrompt
-              ? `${agentPrompt}\n\nYour assignment for this call:\n${task}`
-              : promptWithContext(context)
+            instructions: agentPrompt ? `${agentPrompt}\n\nYour assignment for this call:\n${task}` : promptWithContext(context)
           }
         });
         sendToOpenAi({
@@ -248,20 +227,16 @@ export function createMasteryServer(config: Config) {
       if (event.event === "media" && typeof event.media?.payload === "string") {
         sendToOpenAi({ type: "input_audio_buffer.append", audio: event.media.payload });
       }
-
       if (event.event === "stop") openAiWs.close();
     });
 
     openAiWs.on("message", (raw) => {
       let event: JsonObject;
       try { event = JSON.parse(raw.toString()); } catch { return; }
-
       if (event.type === "response.output_audio.delta" && event.delta && streamSid) {
         safeSend(twilioWs, { event: "media", streamSid, media: { payload: event.delta } });
       }
-      if (event.type === "input_audio_buffer.speech_started" && streamSid) {
-        safeSend(twilioWs, { event: "clear", streamSid });
-      }
+      if (event.type === "input_audio_buffer.speech_started" && streamSid) safeSend(twilioWs, { event: "clear", streamSid });
       if (event.type === "error") console.error("OpenAI Realtime error:", event.error);
     });
 
@@ -283,7 +258,14 @@ export function createMasteryServer(config: Config) {
 
 if (process.env.NODE_ENV !== "test") {
   const config = loadConfig();
-  createMasteryServer(config).listen(config.port, "0.0.0.0", () => {
-    console.info(`Mastery voice agent listening on port ${config.port}`);
-  });
+  initializeStudioStore(config)
+    .then(() => {
+      createMasteryServer(config).listen(config.port, "0.0.0.0", () => {
+        console.info(`Mastery voice agent listening on port ${config.port}`);
+      });
+    })
+    .catch((error) => {
+      console.error("Studio database initialization failed:", error);
+      process.exit(1);
+    });
 }
