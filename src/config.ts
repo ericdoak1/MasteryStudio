@@ -7,6 +7,8 @@ export type Config = {
   openAiModel: string;
   openAiVoice: string;
   databaseUrl?: string;
+  renderApiKey?: string;
+  renderServiceId?: string;
   twilioAccountSid?: string;
   twilioAuthToken?: string;
   twilioFromNumber?: string;
@@ -44,38 +46,26 @@ function parseBoolean(value: string | undefined, fallback: boolean, name: string
 function parsePositiveInteger(value: string | undefined, fallback: number, name: string): number {
   if (value === undefined || value === "") return fallback;
   const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
-    throw new Error(`${name} must be a positive integer`);
-  }
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) throw new Error(`${name} must be a positive integer`);
   return parsed;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const required = ["OPENAI_API_KEY", "PUBLIC_BASE_URL"] as const;
-  for (const key of required) {
-    if (!env[key]) throw new Error(`Missing required environment variable: ${key}`);
-  }
-
+  for (const key of required) if (!env[key]) throw new Error(`Missing required environment variable: ${key}`);
   const base = env.PUBLIC_BASE_URL!.replace(/\/$/, "");
   if (!base.startsWith("https://")) throw new Error("PUBLIC_BASE_URL must start with https://");
-
   return {
-    port: Number(env.PORT ?? 3000),
-    publicBaseUrl: base,
-    openAiApiKey: env.OPENAI_API_KEY!,
-    openAiModel: env.OPENAI_REALTIME_MODEL ?? "gpt-realtime-2.1",
-    openAiVoice: env.OPENAI_VOICE ?? "marin",
+    port: Number(env.PORT ?? 3000), publicBaseUrl: base,
+    openAiApiKey: env.OPENAI_API_KEY!, openAiModel: env.OPENAI_REALTIME_MODEL ?? "gpt-realtime-2.1", openAiVoice: env.OPENAI_VOICE ?? "marin",
     databaseUrl: env.DATABASE_URL || undefined,
-    twilioAccountSid: env.TWILIO_ACCOUNT_SID || undefined,
-    twilioAuthToken: env.TWILIO_AUTH_TOKEN || undefined,
-    twilioFromNumber: env.TWILIO_FROM_NUMBER || undefined,
+    renderApiKey: env.RENDER_API_KEY || undefined,
+    renderServiceId: env.RENDER_SERVICE_ID || "srv-da3o9l8u01pc73c2ggvg",
+    twilioAccountSid: env.TWILIO_ACCOUNT_SID || undefined, twilioAuthToken: env.TWILIO_AUTH_TOKEN || undefined, twilioFromNumber: env.TWILIO_FROM_NUMBER || undefined,
     outboundApiKey: env.OUTBOUND_API_KEY || undefined,
-    masteryProfileUrl: env.MASTERY_PROFILE_URL || undefined,
-    masteryProfileToken: env.MASTERY_PROFILE_TOKEN || undefined,
-    masteryStudioContextUrl: env.MASTERY_STUDIO_CONTEXT_URL || undefined,
-    masteryStudioContextToken: env.MASTERY_STUDIO_CONTEXT_TOKEN || undefined,
-    linqApiToken: env.LINQ_API_TOKEN || undefined,
-    linqWebhookSecret: env.LINQ_WEBHOOK_SECRET || undefined,
+    masteryProfileUrl: env.MASTERY_PROFILE_URL || undefined, masteryProfileToken: env.MASTERY_PROFILE_TOKEN || undefined,
+    masteryStudioContextUrl: env.MASTERY_STUDIO_CONTEXT_URL || undefined, masteryStudioContextToken: env.MASTERY_STUDIO_CONTEXT_TOKEN || undefined,
+    linqApiToken: env.LINQ_API_TOKEN || undefined, linqWebhookSecret: env.LINQ_WEBHOOK_SECRET || undefined,
     linqReplyMode: parseReplyMode(env.LINQ_REPLY_MODE),
     linqVoiceSendTranscript: parseBoolean(env.LINQ_VOICE_SEND_TRANSCRIPT, false, "LINQ_VOICE_SEND_TRANSCRIPT"),
     linqVoiceMaxCharacters: parsePositiveInteger(env.LINQ_VOICE_MAX_CHARACTERS, 600, "LINQ_VOICE_MAX_CHARACTERS"),
@@ -83,7 +73,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     elevenLabsApiKey: env.ELEVENLABS_API_KEY || undefined,
     elevenLabsEnableLogging: parseBoolean(env.ELEVENLABS_ENABLE_LOGGING, true, "ELEVENLABS_ENABLE_LOGGING"),
     elevenLabsVoiceId: env.ELEVENLABS_VOICE_ID?.trim() || "S9EGwlCtMF7VXtENq79v",
-    elevenLabsTtsModel: env.ELEVENLABS_TTS_MODEL?.trim() || "eleven_flash_v2_5",
-    elevenLabsSttModel: env.ELEVENLABS_STT_MODEL?.trim() || "scribe_v2"
+    elevenLabsTtsModel: env.ELEVENLABS_TTS_MODEL?.trim() || "eleven_flash_v2_5", elevenLabsSttModel: env.ELEVENLABS_STT_MODEL?.trim() || "scribe_v2"
   };
 }
