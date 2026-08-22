@@ -12,6 +12,8 @@ export type Config = {
   outboundApiKey?: string;
   masteryProfileUrl?: string;
   masteryProfileToken?: string;
+  masteryStudioContextUrl?: string;
+  masteryStudioContextToken?: string;
   linqApiToken?: string;
   linqWebhookSecret?: string;
   linqReplyMode: LinqReplyMode;
@@ -70,6 +72,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     outboundApiKey: env.OUTBOUND_API_KEY || undefined,
     masteryProfileUrl: env.MASTERY_PROFILE_URL || undefined,
     masteryProfileToken: env.MASTERY_PROFILE_TOKEN || undefined,
+    masteryStudioContextUrl: env.MASTERY_STUDIO_CONTEXT_URL || undefined,
+    masteryStudioContextToken: env.MASTERY_STUDIO_CONTEXT_TOKEN || undefined,
     linqApiToken: env.LINQ_API_TOKEN || undefined,
     linqWebhookSecret: env.LINQ_WEBHOOK_SECRET || undefined,
     linqReplyMode: parseReplyMode(env.LINQ_REPLY_MODE),
