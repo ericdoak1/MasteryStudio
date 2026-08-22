@@ -6,6 +6,7 @@ export type Config = {
   openAiApiKey: string;
   openAiModel: string;
   openAiVoice: string;
+  databaseUrl?: string;
   twilioAccountSid?: string;
   twilioAuthToken?: string;
   twilioFromNumber?: string;
@@ -56,9 +57,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
 
   const base = env.PUBLIC_BASE_URL!.replace(/\/$/, "");
-  if (!base.startsWith("https://")) {
-    throw new Error("PUBLIC_BASE_URL must start with https://");
-  }
+  if (!base.startsWith("https://")) throw new Error("PUBLIC_BASE_URL must start with https://");
 
   return {
     port: Number(env.PORT ?? 3000),
@@ -66,6 +65,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     openAiApiKey: env.OPENAI_API_KEY!,
     openAiModel: env.OPENAI_REALTIME_MODEL ?? "gpt-realtime-2.1",
     openAiVoice: env.OPENAI_VOICE ?? "marin",
+    databaseUrl: env.DATABASE_URL || undefined,
     twilioAccountSid: env.TWILIO_ACCOUNT_SID || undefined,
     twilioAuthToken: env.TWILIO_AUTH_TOKEN || undefined,
     twilioFromNumber: env.TWILIO_FROM_NUMBER || undefined,
@@ -77,19 +77,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     linqApiToken: env.LINQ_API_TOKEN || undefined,
     linqWebhookSecret: env.LINQ_WEBHOOK_SECRET || undefined,
     linqReplyMode: parseReplyMode(env.LINQ_REPLY_MODE),
-    linqVoiceSendTranscript: parseBoolean(
-      env.LINQ_VOICE_SEND_TRANSCRIPT,
-      false,
-      "LINQ_VOICE_SEND_TRANSCRIPT"
-    ),
+    linqVoiceSendTranscript: parseBoolean(env.LINQ_VOICE_SEND_TRANSCRIPT, false, "LINQ_VOICE_SEND_TRANSCRIPT"),
     linqVoiceMaxCharacters: parsePositiveInteger(env.LINQ_VOICE_MAX_CHARACTERS, 600, "LINQ_VOICE_MAX_CHARACTERS"),
     openAiTextModel: env.OPENAI_TEXT_MODEL ?? "gpt-5-mini",
     elevenLabsApiKey: env.ELEVENLABS_API_KEY || undefined,
-    elevenLabsEnableLogging: parseBoolean(
-      env.ELEVENLABS_ENABLE_LOGGING,
-      true,
-      "ELEVENLABS_ENABLE_LOGGING"
-    ),
+    elevenLabsEnableLogging: parseBoolean(env.ELEVENLABS_ENABLE_LOGGING, true, "ELEVENLABS_ENABLE_LOGGING"),
     elevenLabsVoiceId: env.ELEVENLABS_VOICE_ID?.trim() || "S9EGwlCtMF7VXtENq79v",
     elevenLabsTtsModel: env.ELEVENLABS_TTS_MODEL?.trim() || "eleven_flash_v2_5",
     elevenLabsSttModel: env.ELEVENLABS_STT_MODEL?.trim() || "scribe_v2"
