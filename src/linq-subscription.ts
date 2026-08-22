@@ -22,16 +22,26 @@ async function linq(config: Config, path: string, init: RequestInit = {}) {
   return value;
 }
 
+function subscriptionsFrom(value: any): Subscription[] {
+  if (Array.isArray(value)) return value;
+  if (Array.isArray(value?.subscriptions)) return value.subscriptions;
+  if (Array.isArray(value?.data?.subscriptions)) return value.data.subscriptions;
+  if (Array.isArray(value?.data)) return value.data;
+  if (Array.isArray(value?.items)) return value.items;
+  return [];
+}
+
 export async function ensureLinqWebhook(config: Config): Promise<{ signingSecret?: string; subscriptionId?: string; targetUrl?: string }> {
   if (!config.linqApiToken || !config.publicBaseUrl) return {};
   const targetUrl = `${config.publicBaseUrl}/linq/webhook?version=2026-02-03`;
   const listed = await linq(config, "/webhook-subscriptions");
-  const items: Subscription[] = Array.isArray(listed) ? listed : Array.isArray(listed?.data) ? listed.data : Array.isArray(listed?.items) ? listed.items : [];
-  for (const sub of items) {
-    if (sub?.target_url === targetUrl && sub?.id) {
-      await linq(config, `/webhook-subscriptions/${encodeURIComponent(sub.id)}`, { method: "DELETE" }).catch(() => undefined);
-    }
+  const items = subscriptionsFrom(listed);
+
+  const exact = items.find((sub) => sub?.target_url === targetUrl && sub?.id && sub?.is_active !== false);
+  if (exact) {
+    return { subscriptionId: exact.id, targetUrl };
   }
+
   const created = await linq(config, "/webhook-subscriptions", {
     method: "POST",
     body: JSON.stringify({
