@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Config } from "./config.js";
-import { getStudioProfile, studioContextForPhone, upsertStudioProfile } from "./studio-store.js";
+import { getStudioProfile, studioContextForPhone, upsertStudioProfile, type StudioProfile } from "./studio-store.js";
 
 const MAX_BODY = 256 * 1024;
 
@@ -79,10 +79,14 @@ export async function handleStudioApi(
         json(res, 400, { error: "Valid E.164 phone is required" });
         return true;
       }
-      const patch: Record<string, unknown> = {};
-      for (const key of ["name", "organization", "vision", "mission", "weeklyTheme", "goals", "knowledge"]) {
-        if (Object.prototype.hasOwnProperty.call(payload, key)) patch[key] = payload[key];
-      }
+      const patch: Partial<Omit<StudioProfile, "phone" | "updatedAt">> = {};
+      if (typeof payload.name === "string" || payload.name === null) patch.name = payload.name as string | null;
+      if (typeof payload.organization === "string" || payload.organization === null) patch.organization = payload.organization as string | null;
+      if (typeof payload.vision === "string" || payload.vision === null) patch.vision = payload.vision as string | null;
+      if (typeof payload.mission === "string" || payload.mission === null) patch.mission = payload.mission as string | null;
+      if (typeof payload.weeklyTheme === "string" || payload.weeklyTheme === null) patch.weeklyTheme = payload.weeklyTheme as string | null;
+      if (Object.prototype.hasOwnProperty.call(payload, "goals")) patch.goals = payload.goals;
+      if (Object.prototype.hasOwnProperty.call(payload, "knowledge")) patch.knowledge = payload.knowledge;
       const profile = await upsertStudioProfile(config, phone, patch);
       json(res, 200, profile);
     } catch (error) {
