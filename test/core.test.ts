@@ -166,3 +166,35 @@ test("fetchMemberContext refuses a non-HTTPS profile endpoint", async (t) => {
   );
   assert.equal(requested, false);
 });
+
+test("fetchMemberContext prefers full Studio context and requests all permission-scoped data", async () => {
+  const config = loadConfig({
+    OPENAI_API_KEY: "test-key",
+    PUBLIC_BASE_URL: "https://mastery.example.com",
+    MASTERY_PROFILE_URL: "https://profiles.example.com/member",
+    MASTERY_STUDIO_CONTEXT_URL: "https://studio.example.com/api/emma/context",
+    MASTERY_STUDIO_CONTEXT_TOKEN: "studio-token"
+  });
+
+  let requestedUrl = "";
+  let authorization = "";
+  const fetchImplementation = (async (input: string | URL | Request, init?: RequestInit) => {
+    requestedUrl = String(input);
+    authorization = String((init?.headers as Record<string, string> | undefined)?.authorization ?? "");
+    return Response.json({
+      member: { name: "Eric" },
+      studio: { weeklyTheme: "Keep the Main Thing the Main Thing" },
+      api_key: "must-not-reach-model"
+    });
+  }) as typeof fetch;
+
+  const context = await fetchMemberContext(config, "+15551234567", fetchImplementation);
+  const url = new URL(requestedUrl);
+  assert.equal(url.hostname, "studio.example.com");
+  assert.equal(url.searchParams.get("phone"), "+15551234567");
+  assert.equal(url.searchParams.get("scope"), "studio");
+  assert.equal(url.searchParams.get("include"), "all");
+  assert.equal(authorization, "Bearer studio-token");
+  assert.equal((context.studio as Record<string, unknown>).weeklyTheme, "Keep the Main Thing the Main Thing");
+  assert.equal("api_key" in context, false);
+});
