@@ -24,7 +24,7 @@ services:
       - key: OPENAI_API_KEY
         sync: false
       - key: PUBLIC_BASE_URL
-        sync: false
+        value: https://masterystudio.onrender.com
       - key: TWILIO_AUTH_TOKEN
         sync: false
       - key: TWILIO_ACCOUNT_SID
