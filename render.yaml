@@ -17,7 +17,33 @@ services:
         sync: false
       - key: OUTBOUND_API_KEY
         sync: false
+      - key: MASTERY_PROFILE_URL
+        sync: false
+      - key: MASTERY_PROFILE_TOKEN
+        sync: false
+      - key: LINQ_API_TOKEN
+        sync: false
+      - key: LINQ_WEBHOOK_SECRET
+        sync: false
+      - key: ELEVENLABS_API_KEY
+        sync: false
       - key: OPENAI_REALTIME_MODEL
         value: gpt-realtime-2.1
       - key: OPENAI_VOICE
         value: marin
+      - key: OPENAI_TEXT_MODEL
+        value: gpt-5-mini
+      - key: ELEVENLABS_VOICE_ID
+        value: S9EGwlCtMF7VXtENq79v
+      - key: ELEVENLABS_TTS_MODEL
+        value: eleven_flash_v2_5
+      - key: ELEVENLABS_ENABLE_LOGGING
+        value: true
+      - key: ELEVENLABS_STT_MODEL
+        value: scribe_v2
+      - key: LINQ_REPLY_MODE
+        value: auto
+      - key: LINQ_VOICE_MAX_CHARACTERS
+        value: 600
+      - key: LINQ_VOICE_SEND_TRANSCRIPT
+        value: false

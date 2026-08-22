@@ -3,11 +3,22 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { WebSocket, WebSocketServer } from "ws";
 import twilio from "twilio";
 import { loadConfig, type Config } from "./config.js";
+import { fetchMemberContext } from "./member-context.js";
 import { promptWithContext } from "./mastery-prompt.js";
 import { buildVoiceTwiml } from "./twiml.js";
-import { parseLinqMessage, processLinqMessage, verifyLinqSignature } from "./linq.js";
+import {
+  CommandCenterInputError,
+  parseLinqMessage,
+  processLinqMessage,
+  sendCommandCenterLinqMessage,
+  verifyLinqSignature,
+  type CommandCenterLinqRequest
+} from "./linq.js";
 
 type JsonObject = Record<string, any>;
+const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
+
+class RequestBodyTooLargeError extends Error {}
 
 function sendJson(res: ServerResponse, status: number, value: unknown): void {
   res.writeHead(status, { "content-type": "application/json" });
@@ -16,26 +27,26 @@ function sendJson(res: ServerResponse, status: number, value: unknown): void {
 
 async function readBody(req: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(Buffer.from(chunk));
+  let size = 0;
+  let tooLarge = false;
+  for await (const chunk of req) {
+    const buffer = Buffer.from(chunk);
+    size += buffer.byteLength;
+    if (size > MAX_REQUEST_BODY_BYTES) {
+      tooLarge = true;
+      continue;
+    }
+    chunks.push(buffer);
+  }
+  if (tooLarge) throw new RequestBodyTooLargeError("Request body exceeds 1 MB");
   return Buffer.concat(chunks).toString("utf8");
 }
 
-async function fetchMemberContext(config: Config, phone?: string): Promise<Record<string, unknown>> {
-  if (!config.masteryProfileUrl || !phone) return {};
-  try {
-    const url = new URL(config.masteryProfileUrl);
-    url.searchParams.set("phone", phone);
-    const response = await fetch(url, {
-      headers: config.masteryProfileToken
-        ? { authorization: `Bearer ${config.masteryProfileToken}` }
-        : undefined,
-      signal: AbortSignal.timeout(3000)
-    });
-    if (!response.ok) throw new Error(`profile endpoint returned ${response.status}`);
-    return (await response.json()) as Record<string, unknown>;
-  } catch (error) {
-    console.warn("Member context unavailable:", error);
-    return {};
+function sendBodyError(res: ServerResponse, error: unknown): void {
+  if (error instanceof RequestBodyTooLargeError) {
+    sendJson(res, 413, { error: error.message });
+  } else {
+    sendJson(res, 400, { error: "Invalid JSON" });
   }
 }
 
@@ -73,7 +84,7 @@ export function createMasteryServer(config: Config) {
         return sendJson(res, 401, { error: "Unauthorized" });
       }
       let body: { to?: string; task?: string; agentPrompt?: string };
-      try { body = JSON.parse(await readBody(req)); } catch { return sendJson(res, 400, { error: "Invalid JSON" }); }
+      try { body = JSON.parse(await readBody(req)); } catch (error) { return sendBodyError(res, error); }
       const to = body.to?.trim();
       const task = body.task?.trim();
       const agentPrompt = body.agentPrompt?.trim();
@@ -98,7 +109,8 @@ export function createMasteryServer(config: Config) {
     }
 
     if (req.method === "POST" && path === "/voice/incoming") {
-      const rawBody = await readBody(req);
+      let rawBody: string;
+      try { rawBody = await readBody(req); } catch (error) { return sendBodyError(res, error); }
       const params = new URLSearchParams(rawBody);
       if (!validateTwilioWebhook(config, req, params)) {
         return sendJson(res, 403, { error: "Invalid Twilio signature" });
@@ -112,8 +124,35 @@ export function createMasteryServer(config: Config) {
       return res.end(twiml);
     }
 
+    if (req.method === "POST" && path === "/linq/send") {
+      if (!config.linqApiToken || !config.outboundApiKey) {
+        return sendJson(res, 503, { error: "Command Center messaging is not configured" });
+      }
+      if (req.headers.authorization !== `Bearer ${config.outboundApiKey}`) {
+        return sendJson(res, 401, { error: "Unauthorized" });
+      }
+      let body: CommandCenterLinqRequest;
+      try { body = JSON.parse(await readBody(req)); } catch (error) { return sendBodyError(res, error); }
+      try {
+        const result = await sendCommandCenterLinqMessage(config, body);
+        return sendJson(res, 200, result);
+      } catch (error) {
+        if (error instanceof CommandCenterInputError) {
+          return sendJson(res, 400, { error: error.message });
+        }
+        console.error("Command Center message failed:", error);
+        return sendJson(res, 502, {
+          error: error instanceof Error ? error.message : "Command Center message failed"
+        });
+      }
+    }
+
     if (req.method === "POST" && path === "/linq/webhook") {
-      const rawBody = await readBody(req);
+      if (!config.linqApiToken || !config.linqWebhookSecret) {
+        return sendJson(res, 503, { error: "Linq webhook verification is not configured" });
+      }
+      let rawBody: string;
+      try { rawBody = await readBody(req); } catch (error) { return sendBodyError(res, error); }
       if (!verifyLinqSignature(rawBody, req.headers, config.linqWebhookSecret)) {
         return sendJson(res, 401, { error: "Invalid Linq signature" });
       }
