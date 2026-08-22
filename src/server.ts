@@ -9,14 +9,18 @@ import { buildVoiceTwiml } from "./twiml.js";
 import { handleStudioApi } from "./studio-api.js";
 import { initializeStudioStore } from "./studio-store.js";
 import { handleRenderAdmin } from "./render-admin.js";
+import { ensureLinqWebhook } from "./linq-subscription.js";
 import { CommandCenterInputError, parseLinqMessage, processLinqMessage, sendCommandCenterLinqMessage, verifyLinqSignature, type CommandCenterLinqRequest } from "./linq.js";
 
 type JsonObject = Record<string, any>;
 const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
-const RELEASE = "trace-20260822-1";
+const RELEASE = "routing-20260822-2";
 let linqWebhookCount = 0;
 let lastLinqWebhookAt: string | null = null;
 let lastParsedLinqMessageAt: string | null = null;
+let linqSubscriptionId: string | null = null;
+let linqSubscriptionTarget: string | null = null;
+let linqSubscriptionError: string | null = null;
 class RequestBodyTooLargeError extends Error {}
 function sendJson(res: ServerResponse,status:number,value:unknown){res.writeHead(status,{"content-type":"application/json","cache-control":"no-store"});res.end(JSON.stringify(value));}
 async function readBody(req:IncomingMessage){const chunks:Buffer[]=[];let size=0,tooLarge=false;for await(const chunk of req){const b=Buffer.from(chunk);size+=b.byteLength;if(size>MAX_REQUEST_BODY_BYTES){tooLarge=true;continue;}chunks.push(b);}if(tooLarge)throw new RequestBodyTooLargeError("Request body exceeds 1 MB");return Buffer.concat(chunks).toString("utf8");}
@@ -27,8 +31,8 @@ function validateTwilioWebhook(config:Config,req:IncomingMessage,params:URLSearc
 export function createMasteryServer(config:Config){
  const mediaWss=new WebSocketServer({noServer:true});
  const server=createServer(async(req,res)=>{const url=new URL(req.url??"/","http://localhost");const path=url.pathname;
-  if(req.method==="GET"&&path==="/health")return sendJson(res,200,{ok:true,service:"mastery-voice-agent",release:RELEASE,studioDatabase:Boolean(config.databaseUrl),renderAdmin:Boolean(config.renderApiKey)});
-  if(req.method==="GET"&&path==="/diagnostics")return sendJson(res,200,{ok:true,service:"mastery-voice-agent",release:RELEASE,studioDatabase:Boolean(config.databaseUrl),renderAdmin:Boolean(config.renderApiKey),linqConfigured:Boolean(config.linqApiToken&&config.linqWebhookSecret),linqWebhookCount,lastLinqWebhookAt,lastParsedLinqMessageAt});
+  if(req.method==="GET"&&path==="/health")return sendJson(res,200,{ok:true,service:"mastery-voice-agent",release:RELEASE,studioDatabase:Boolean(config.databaseUrl),renderAdmin:Boolean(config.renderApiKey),linqSubscription:Boolean(linqSubscriptionId)});
+  if(req.method==="GET"&&path==="/diagnostics")return sendJson(res,200,{ok:true,service:"mastery-voice-agent",release:RELEASE,studioDatabase:Boolean(config.databaseUrl),renderAdmin:Boolean(config.renderApiKey),linqConfigured:Boolean(config.linqApiToken&&config.linqWebhookSecret),linqSubscriptionId,linqSubscriptionTarget,linqSubscriptionError,linqWebhookCount,lastLinqWebhookAt,lastParsedLinqMessageAt});
   try{if(await handleRenderAdmin(config,req,res,url))return;if(await handleStudioApi(config,req,res,url))return;}catch(error){console.error("Mastery API failed:",error);return sendJson(res,500,{error:"Mastery API failed"});}
   if(req.method==="POST"&&path==="/voice/outbound"){if(!config.twilioAccountSid||!config.twilioAuthToken||!config.twilioFromNumber||!config.outboundApiKey)return sendJson(res,503,{error:"Outbound calling is not configured"});if(req.headers.authorization!==`Bearer ${config.outboundApiKey}`)return sendJson(res,401,{error:"Unauthorized"});let body:{to?:string;task?:string;agentPrompt?:string};try{body=JSON.parse(await readBody(req));}catch(error){return sendBodyError(res,error);}const to=body.to?.trim(),task=body.task?.trim(),agentPrompt=body.agentPrompt?.trim();if(!to||!task||!agentPrompt)return sendJson(res,400,{error:"to, task, and agentPrompt are required"});try{const client=twilio(config.twilioAccountSid,config.twilioAuthToken);const call=await client.calls.create({to,from:config.twilioFromNumber,twiml:buildVoiceTwiml(config.publicBaseUrl,{caller:to,direction:"outbound",task,agentPrompt})});return sendJson(res,202,{callSid:call.sid,status:call.status});}catch(error){console.error("Outbound call failed:",error);return sendJson(res,502,{error:error instanceof Error?error.message:"Outbound call failed"});}}
   if(req.method==="POST"&&path==="/voice/incoming"){let rawBody:string;try{rawBody=await readBody(req);}catch(error){return sendBodyError(res,error);}const params=new URLSearchParams(rawBody);if(!validateTwilioWebhook(config,req,params))return sendJson(res,403,{error:"Invalid Twilio signature"});const twiml=buildVoiceTwiml(config.publicBaseUrl,{caller:params.get("From")??"",called:params.get("To")??"",callSid:params.get("CallSid")??""});res.writeHead(200,{"content-type":"text/xml; charset=utf-8"});return res.end(twiml);}
@@ -39,4 +43,21 @@ export function createMasteryServer(config:Config){
  server.on("upgrade",(req,socket,head)=>{const path=new URL(req.url??"/","http://localhost").pathname;if(path!=="/voice/media")return socket.destroy();mediaWss.handleUpgrade(req,socket,head,ws=>mediaWss.emit("connection",ws,req));});
  mediaWss.on("connection",twilioWs=>{let streamSid="",caller="",openAiReady=false;const pending:unknown[]=[];const openAiWs=new WebSocket(`wss://api.openai.com/v1/realtime?model=${encodeURIComponent(config.openAiModel)}`,{headers:{Authorization:`Bearer ${config.openAiApiKey}`}});const send=(event:unknown)=>{if(openAiReady&&openAiWs.readyState===WebSocket.OPEN)safeSend(openAiWs,event);else pending.push(event);};openAiWs.on("open",()=>{openAiReady=true;for(const e of pending.splice(0))safeSend(openAiWs,e);});twilioWs.on("message",async raw=>{let event:JsonObject;try{event=JSON.parse(raw.toString());}catch{return;}if(event.event==="start"){streamSid=event.start?.streamSid??event.streamSid??"";caller=event.start?.customParameters?.caller??"";const task=event.start?.customParameters?.task??"",agentPrompt=event.start?.customParameters?.agentPrompt??"",context=await fetchMemberContext(config,caller);send({type:"session.update",session:{type:"realtime",model:config.openAiModel,output_modalities:["audio"],audio:{input:{format:{type:"audio/pcmu"},turn_detection:{type:"server_vad",threshold:.5,prefix_padding_ms:300,silence_duration_ms:500,create_response:true,interrupt_response:true}},output:{format:{type:"audio/pcmu"},voice:config.openAiVoice}},instructions:agentPrompt?`${agentPrompt}\n\nYour assignment for this call:\n${task}`:promptWithContext(context)}});send({type:"conversation.item.create",item:{type:"message",role:"user",content:[{type:"input_text",text:"The phone call just connected. Greet the caller now and begin."}]}});send({type:"response.create"});}if(event.event==="media"&&typeof event.media?.payload==="string")send({type:"input_audio_buffer.append",audio:event.media.payload});if(event.event==="stop")openAiWs.close();});openAiWs.on("message",raw=>{let event:JsonObject;try{event=JSON.parse(raw.toString());}catch{return;}if(event.type==="response.output_audio.delta"&&event.delta&&streamSid)safeSend(twilioWs,{event:"media",streamSid,media:{payload:event.delta}});if(event.type==="input_audio_buffer.speech_started"&&streamSid)safeSend(twilioWs,{event:"clear",streamSid});if(event.type==="error")console.error("OpenAI Realtime error:",event.error);});const close=()=>{if(twilioWs.readyState===WebSocket.OPEN)twilioWs.close();if(openAiWs.readyState===WebSocket.OPEN)openAiWs.close();};twilioWs.on("error",e=>console.error("Twilio stream error:",e));openAiWs.on("error",e=>console.error("OpenAI socket error:",e));twilioWs.on("close",close);openAiWs.on("close",(code,reason)=>{console.info("Call bridge closed",{caller,streamSid,code,reason:reason.toString()});close();});});return server;
 }
-if(process.env.NODE_ENV!=="test"){const config=loadConfig();initializeStudioStore(config).catch(error=>console.error("Studio database initialization failed:",error));createMasteryServer(config).listen(config.port,"0.0.0.0",()=>console.info(`Mastery voice agent ${RELEASE} listening on port ${config.port}`));}
+
+async function main(){
+ const config=loadConfig();
+ try{
+  const subscription=await ensureLinqWebhook(config);
+  if(subscription.signingSecret)config.linqWebhookSecret=subscription.signingSecret;
+  linqSubscriptionId=subscription.subscriptionId??null;
+  linqSubscriptionTarget=subscription.targetUrl??null;
+  linqSubscriptionError=null;
+  console.info("Linq webhook registered",{subscriptionId:linqSubscriptionId,targetUrl:linqSubscriptionTarget});
+ }catch(error){
+  linqSubscriptionError=error instanceof Error?error.message:"Linq webhook registration failed";
+  console.error("Linq webhook registration failed:",error);
+ }
+ await initializeStudioStore(config).catch(error=>console.error("Studio database initialization failed:",error));
+ createMasteryServer(config).listen(config.port,"0.0.0.0",()=>console.info(`Mastery voice agent ${RELEASE} listening on port ${config.port}`));
+}
+if(process.env.NODE_ENV!=="test")main().catch(error=>{console.error("Fatal startup error:",error);process.exit(1);});
