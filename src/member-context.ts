@@ -1,4 +1,5 @@
 import type { Config } from "./config.js";
+import { studioContextForPhone } from "./studio-store.js";
 
 const MAX_CONTEXT_BYTES = 256 * 1024;
 const SENSITIVE_CONTEXT_KEY = /(^|_)(password|secret|token|api_key|authorization|credential|cookie|private_key|ssn)($|_)/;
@@ -7,9 +8,7 @@ function safeContextValue(value: unknown, depth = 0): unknown {
   if (depth > 6 || value === null) return value;
   if (typeof value === "string") return value.slice(0, 8000);
   if (typeof value === "number" || typeof value === "boolean") return value;
-  if (Array.isArray(value)) {
-    return value.slice(0, 100).map((item) => safeContextValue(item, depth + 1));
-  }
+  if (Array.isArray(value)) return value.slice(0, 100).map((item) => safeContextValue(item, depth + 1));
   if (typeof value !== "object") return undefined;
 
   const clean: Record<string, unknown> = {};
@@ -41,14 +40,9 @@ async function fetchContextEndpoint(
   if (!response.ok) throw new Error(`context endpoint returned ${response.status}`);
 
   const rawContext = await response.text();
-  if (Buffer.byteLength(rawContext, "utf8") > MAX_CONTEXT_BYTES) {
-    throw new Error("context endpoint returned more than 256 KB");
-  }
-
+  if (Buffer.byteLength(rawContext, "utf8") > MAX_CONTEXT_BYTES) throw new Error("context endpoint returned more than 256 KB");
   const parsed = JSON.parse(rawContext) as unknown;
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("context endpoint must return a JSON object");
-  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("context endpoint must return a JSON object");
   return safeContextValue(parsed) as Record<string, unknown>;
 }
 
@@ -58,6 +52,15 @@ export async function fetchMemberContext(
   fetchImplementation: typeof fetch = fetch
 ): Promise<Record<string, unknown>> {
   if (!phone) return {};
+
+  if (config.databaseUrl) {
+    try {
+      const localContext = await studioContextForPhone(config, phone);
+      if (Object.keys(localContext).length > 0) return safeContextValue(localContext) as Record<string, unknown>;
+    } catch (error) {
+      console.warn("Local Studio context unavailable:", error);
+    }
+  }
 
   const endpoint = config.masteryStudioContextUrl ?? config.masteryProfileUrl;
   const token = config.masteryStudioContextUrl
