@@ -1,6 +1,8 @@
 import { Pool } from "pg";
 import type { Config } from "./config.js";
 
+export const DEFAULT_MASTERY_VISION = "Mastery helps leaders turn who they are and what they believe into a clear, repeatable way of developing people, building strong teams, and improving performance.";
+
 export type StudioProfile = {
   phone: string;
   name?: string | null;
@@ -75,7 +77,15 @@ export async function upsertStudioProfile(
   if (!db) throw new Error("DATABASE_URL is not configured");
   await initializeStudioStore(config);
   const existing = await getStudioProfile(config, phone);
-  const next = { ...existing, ...patch, phone };
+  const next = {
+    organization: "Mastery",
+    vision: DEFAULT_MASTERY_VISION,
+    goals: [],
+    knowledge: [],
+    ...existing,
+    ...patch,
+    phone
+  };
   await db.query(`
     insert into studio_profiles (phone, name, organization, vision, mission, weekly_theme, goals, knowledge, updated_at)
     values ($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,now())
@@ -91,8 +101,8 @@ export async function upsertStudioProfile(
   `, [
     phone,
     next.name ?? null,
-    next.organization ?? null,
-    next.vision ?? null,
+    next.organization ?? "Mastery",
+    next.vision ?? DEFAULT_MASTERY_VISION,
     next.mission ?? null,
     next.weeklyTheme ?? null,
     JSON.stringify(next.goals ?? []),
@@ -101,14 +111,29 @@ export async function upsertStudioProfile(
   return (await getStudioProfile(config, phone))!;
 }
 
+export async function ensureStudioProfile(config: Config, phone: string): Promise<StudioProfile | null> {
+  if (!config.databaseUrl) return null;
+  const existing = await getStudioProfile(config, phone);
+  if (existing) {
+    if (!existing.vision || !existing.organization) {
+      return upsertStudioProfile(config, phone, {
+        organization: existing.organization || "Mastery",
+        vision: existing.vision || DEFAULT_MASTERY_VISION
+      });
+    }
+    return existing;
+  }
+  return upsertStudioProfile(config, phone, { organization: "Mastery", vision: DEFAULT_MASTERY_VISION });
+}
+
 export async function studioContextForPhone(config: Config, phone: string): Promise<Record<string, unknown>> {
-  const profile = await getStudioProfile(config, phone);
+  const profile = await ensureStudioProfile(config, phone);
   if (!profile) return {};
   return {
     member: { phone: profile.phone, name: profile.name },
-    organization: profile.organization ? { name: profile.organization } : undefined,
+    organization: { name: profile.organization || "Mastery" },
     studio: {
-      vision: profile.vision,
+      vision: profile.vision || DEFAULT_MASTERY_VISION,
       mission: profile.mission,
       weeklyTheme: profile.weeklyTheme,
       goals: profile.goals,
