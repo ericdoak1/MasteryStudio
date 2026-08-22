@@ -101,20 +101,13 @@ export async function ensureLinqWebhook(config: Config): Promise<{ signingSecret
     await removeMasteryLineFromOtherSubscriptions(config, items, targetUrl, masteryLine);
   }
 
-  const exact = items.find((sub) => sub?.target_url === targetUrl && sub?.id && sub?.is_active !== false);
-  if (exact) {
-    if (masteryLine) {
-      await linq(config, `/webhook-subscriptions/${encodeURIComponent(exact.id)}`, {
-        method: "PUT",
-        body: JSON.stringify({
-          target_url: targetUrl,
-          subscribed_events: ["message.received"],
-          phone_numbers: [masteryLine],
-          is_active: true
-        })
-      });
+  // Recreate our subscription on every deploy. Linq only exposes the signing
+  // secret at creation time, so rotating here guarantees this process always
+  // verifies against the secret for the webhook it owns.
+  for (const sub of items) {
+    if (sub?.target_url === targetUrl && sub?.id) {
+      await linq(config, `/webhook-subscriptions/${encodeURIComponent(sub.id)}`, { method: "DELETE" });
     }
-    return { subscriptionId: exact.id, targetUrl };
   }
 
   const created = await linq(config, "/webhook-subscriptions", {
@@ -126,5 +119,6 @@ export async function ensureLinqWebhook(config: Config): Promise<{ signingSecret
     })
   });
   const sub = (created?.data ?? created) as Subscription;
-  return { signingSecret: sub?.signing_secret, subscriptionId: sub?.id, targetUrl };
+  if (!sub?.id || !sub?.signing_secret) throw new Error("Linq created webhook without id/signing secret");
+  return { signingSecret: sub.signing_secret, subscriptionId: sub.id, targetUrl };
 }
