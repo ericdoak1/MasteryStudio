@@ -14,7 +14,7 @@ import { CommandCenterInputError, parseLinqMessage, processLinqMessage, sendComm
 
 type JsonObject = Record<string, any>;
 const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
-const RELEASE = "routing-20260822-2";
+const RELEASE = "studio-link-20260822-3";
 let linqWebhookCount = 0;
 let lastLinqWebhookAt: string | null = null;
 let lastParsedLinqMessageAt: string | null = null;
@@ -46,6 +46,16 @@ export function createMasteryServer(config:Config){
 
 async function main(){
  const config=loadConfig();
+ await initializeStudioStore(config).catch(error=>console.error("Studio database initialization failed:",error));
+ const server=createMasteryServer(config);
+ await new Promise<void>((resolve,reject)=>{
+  server.once("error",reject);
+  server.listen(config.port,"0.0.0.0",()=>{
+   server.off("error",reject);
+   console.info(`Mastery voice agent ${RELEASE} listening on port ${config.port}`);
+   resolve();
+  });
+ });
  try{
   const subscription=await ensureLinqWebhook(config);
   if(subscription.signingSecret)config.linqWebhookSecret=subscription.signingSecret;
@@ -57,7 +67,5 @@ async function main(){
   linqSubscriptionError=error instanceof Error?error.message:"Linq webhook registration failed";
   console.error("Linq webhook registration failed:",error);
  }
- await initializeStudioStore(config).catch(error=>console.error("Studio database initialization failed:",error));
- createMasteryServer(config).listen(config.port,"0.0.0.0",()=>console.info(`Mastery voice agent ${RELEASE} listening on port ${config.port}`));
 }
 if(process.env.NODE_ENV!=="test")main().catch(error=>{console.error("Fatal startup error:",error);process.exit(1);});
