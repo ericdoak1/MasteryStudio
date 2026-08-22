@@ -51,10 +51,11 @@ function parsePositiveInteger(value: string | undefined, fallback: number, name:
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  const required = ["OPENAI_API_KEY", "PUBLIC_BASE_URL"] as const;
-  for (const key of required) if (!env[key]) throw new Error(`Missing required environment variable: ${key}`);
-  const base = env.PUBLIC_BASE_URL!.replace(/\/$/, "");
-  if (!base.startsWith("https://")) throw new Error("PUBLIC_BASE_URL must start with https://");
+  if (!env.OPENAI_API_KEY) throw new Error("Missing required environment variable: OPENAI_API_KEY");
+  const renderHost = env.RENDER_EXTERNAL_HOSTNAME?.trim();
+  const configuredBase = env.PUBLIC_BASE_URL?.trim().replace(/\/$/, "");
+  const base = renderHost ? `https://${renderHost}` : configuredBase;
+  if (!base || !base.startsWith("https://")) throw new Error("A valid HTTPS public base URL is required");
   return {
     port: Number(env.PORT ?? 3000), publicBaseUrl: base,
     openAiApiKey: env.OPENAI_API_KEY!, openAiModel: env.OPENAI_REALTIME_MODEL ?? "gpt-realtime-2.1", openAiVoice: env.OPENAI_VOICE ?? "marin",
