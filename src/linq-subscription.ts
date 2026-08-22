@@ -1,6 +1,14 @@
 import type { Config } from "./config.js";
 
-type Subscription = { id: string; target_url?: string; signing_secret?: string; is_active?: boolean };
+type Subscription = {
+  id: string;
+  target_url?: string;
+  signing_secret?: string;
+  is_active?: boolean;
+  subscribed_events?: string[];
+  phone_numbers?: string[] | null;
+};
+type PhoneNumber = { id?: string; phone_number?: string };
 const LINQ_API = "https://api.linqapp.com/api/partner/v3";
 
 async function linq(config: Config, path: string, init: RequestInit = {}) {
@@ -31,14 +39,81 @@ function subscriptionsFrom(value: any): Subscription[] {
   return [];
 }
 
+function phoneNumbersFrom(value: any): string[] {
+  const items: PhoneNumber[] = Array.isArray(value?.phone_numbers)
+    ? value.phone_numbers
+    : Array.isArray(value?.data?.phone_numbers)
+      ? value.data.phone_numbers
+      : [];
+  return items.map((item) => item.phone_number).filter((value): value is string => Boolean(value));
+}
+
+function receivesMessages(sub: Subscription): boolean {
+  return sub.is_active !== false && (sub.subscribed_events ?? []).includes("message.received");
+}
+
+async function removeMasteryLineFromOtherSubscriptions(
+  config: Config,
+  subscriptions: Subscription[],
+  targetUrl: string,
+  masteryLine: string
+): Promise<void> {
+  let allLines: string[] = [];
+  try { allLines = phoneNumbersFrom(await linq(config, "/phone_numbers")); } catch (error) {
+    console.warn("Could not list Linq phone numbers; leaving broad legacy subscriptions unchanged:", error);
+  }
+
+  for (const sub of subscriptions) {
+    if (!sub.id || sub.target_url === targetUrl || !receivesMessages(sub)) continue;
+    const scoped = Array.isArray(sub.phone_numbers) && sub.phone_numbers.length > 0;
+    if (scoped && !sub.phone_numbers!.includes(masteryLine)) continue;
+    if (!scoped && allLines.length === 0) continue;
+
+    const remaining = scoped
+      ? sub.phone_numbers!.filter((number) => number !== masteryLine)
+      : allLines.filter((number) => number !== masteryLine);
+
+    if (remaining.length === 0) {
+      await linq(config, `/webhook-subscriptions/${encodeURIComponent(sub.id)}`, { method: "DELETE" });
+      continue;
+    }
+
+    await linq(config, `/webhook-subscriptions/${encodeURIComponent(sub.id)}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        target_url: sub.target_url,
+        subscribed_events: sub.subscribed_events,
+        phone_numbers: remaining,
+        is_active: sub.is_active !== false
+      })
+    });
+  }
+}
+
 export async function ensureLinqWebhook(config: Config): Promise<{ signingSecret?: string; subscriptionId?: string; targetUrl?: string }> {
   if (!config.linqApiToken || !config.publicBaseUrl) return {};
   const targetUrl = `${config.publicBaseUrl}/linq/webhook?version=2026-02-03`;
+  const masteryLine = config.linqPhoneNumber;
   const listed = await linq(config, "/webhook-subscriptions");
   const items = subscriptionsFrom(listed);
 
+  if (masteryLine) {
+    await removeMasteryLineFromOtherSubscriptions(config, items, targetUrl, masteryLine);
+  }
+
   const exact = items.find((sub) => sub?.target_url === targetUrl && sub?.id && sub?.is_active !== false);
   if (exact) {
+    if (masteryLine) {
+      await linq(config, `/webhook-subscriptions/${encodeURIComponent(exact.id)}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          target_url: targetUrl,
+          subscribed_events: ["message.received"],
+          phone_numbers: [masteryLine],
+          is_active: true
+        })
+      });
+    }
     return { subscriptionId: exact.id, targetUrl };
   }
 
@@ -46,7 +121,8 @@ export async function ensureLinqWebhook(config: Config): Promise<{ signingSecret
     method: "POST",
     body: JSON.stringify({
       target_url: targetUrl,
-      subscribed_events: ["message.received"]
+      subscribed_events: ["message.received"],
+      ...(masteryLine ? { phone_numbers: [masteryLine] } : {})
     })
   });
   const sub = (created?.data ?? created) as Subscription;
