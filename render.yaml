@@ -45,6 +45,8 @@ services:
         sync: false
       - key: LINQ_WEBHOOK_SECRET
         sync: false
+      - key: MASTERY_LINQ_PHONE_NUMBER
+        value: +16462077638
       - key: ELEVENLABS_API_KEY
         sync: false
       - key: OPENAI_REALTIME_MODEL
