@@ -10,11 +10,12 @@ import { handleStudioApi } from "./studio-api.js";
 import { initializeStudioStore } from "./studio-store.js";
 import { handleRenderAdmin } from "./render-admin.js";
 import { ensureLinqWebhook } from "./linq-subscription.js";
+import { handleRecruitingDemo } from "./recruiting.js";
 import { CommandCenterInputError, parseLinqMessage, processLinqMessage, sendCommandCenterLinqMessage, verifyLinqSignature, type CommandCenterLinqRequest } from "./linq.js";
 
 type JsonObject = Record<string, any>;
 const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
-const RELEASE = "studio-link-20260822-3";
+const RELEASE = "studio-link-20260824-recruiting-1";
 let linqWebhookCount = 0;
 let lastLinqWebhookAt: string | null = null;
 let lastParsedLinqMessageAt: string | null = null;
@@ -33,7 +34,7 @@ export function createMasteryServer(config:Config){
  const server=createServer(async(req,res)=>{const url=new URL(req.url??"/","http://localhost");const path=url.pathname;
   if(req.method==="GET"&&path==="/health")return sendJson(res,200,{ok:true,service:"mastery-voice-agent",release:RELEASE,studioDatabase:Boolean(config.databaseUrl),renderAdmin:Boolean(config.renderApiKey),linqSubscription:Boolean(linqSubscriptionId)});
   if(req.method==="GET"&&path==="/diagnostics")return sendJson(res,200,{ok:true,service:"mastery-voice-agent",release:RELEASE,studioDatabase:Boolean(config.databaseUrl),renderAdmin:Boolean(config.renderApiKey),linqConfigured:Boolean(config.linqApiToken&&config.linqWebhookSecret),linqSubscriptionId,linqSubscriptionTarget,linqSubscriptionError,linqWebhookCount,lastLinqWebhookAt,lastParsedLinqMessageAt});
-  try{if(await handleRenderAdmin(config,req,res,url))return;if(await handleStudioApi(config,req,res,url))return;}catch(error){console.error("Mastery API failed:",error);return sendJson(res,500,{error:"Mastery API failed"});}
+  try{if(await handleRecruitingDemo(config,req,res,url))return;if(await handleRenderAdmin(config,req,res,url))return;if(await handleStudioApi(config,req,res,url))return;}catch(error){console.error("Mastery API failed:",error);return sendJson(res,500,{error:"Mastery API failed"});}
   if(req.method==="POST"&&path==="/voice/outbound"){if(!config.twilioAccountSid||!config.twilioAuthToken||!config.twilioFromNumber||!config.outboundApiKey)return sendJson(res,503,{error:"Outbound calling is not configured"});if(req.headers.authorization!==`Bearer ${config.outboundApiKey}`)return sendJson(res,401,{error:"Unauthorized"});let body:{to?:string;task?:string;agentPrompt?:string};try{body=JSON.parse(await readBody(req));}catch(error){return sendBodyError(res,error);}const to=body.to?.trim(),task=body.task?.trim(),agentPrompt=body.agentPrompt?.trim();if(!to||!task||!agentPrompt)return sendJson(res,400,{error:"to, task, and agentPrompt are required"});try{const client=twilio(config.twilioAccountSid,config.twilioAuthToken);const call=await client.calls.create({to,from:config.twilioFromNumber,twiml:buildVoiceTwiml(config.publicBaseUrl,{caller:to,direction:"outbound",task,agentPrompt})});return sendJson(res,202,{callSid:call.sid,status:call.status});}catch(error){console.error("Outbound call failed:",error);return sendJson(res,502,{error:error instanceof Error?error.message:"Outbound call failed"});}}
   if(req.method==="POST"&&path==="/voice/incoming"){let rawBody:string;try{rawBody=await readBody(req);}catch(error){return sendBodyError(res,error);}const params=new URLSearchParams(rawBody);if(!validateTwilioWebhook(config,req,params))return sendJson(res,403,{error:"Invalid Twilio signature"});const twiml=buildVoiceTwiml(config.publicBaseUrl,{caller:params.get("From")??"",called:params.get("To")??"",callSid:params.get("CallSid")??""});res.writeHead(200,{"content-type":"text/xml; charset=utf-8"});return res.end(twiml);}
   if(req.method==="POST"&&path==="/linq/send"){if(!config.linqApiToken||!config.outboundApiKey)return sendJson(res,503,{error:"Command Center messaging is not configured"});if(req.headers.authorization!==`Bearer ${config.outboundApiKey}`)return sendJson(res,401,{error:"Unauthorized"});let body:CommandCenterLinqRequest;try{body=JSON.parse(await readBody(req));}catch(error){return sendBodyError(res,error);}try{return sendJson(res,200,await sendCommandCenterLinqMessage(config,body));}catch(error){if(error instanceof CommandCenterInputError)return sendJson(res,400,{error:error.message});console.error("Command Center message failed:",error);return sendJson(res,502,{error:error instanceof Error?error.message:"Command Center message failed"});}}
