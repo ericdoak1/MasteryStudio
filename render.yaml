@@ -56,7 +56,7 @@ services:
       - key: OPENAI_TEXT_MODEL
         value: gpt-4.1-mini
       - key: ELEVENLABS_VOICE_ID
-        value: S9EGwlCtMF7VXtENq79v
+        value: DMyrgzQFny3JI1Y1paM5
       - key: ELEVENLABS_TTS_MODEL
         value: eleven_flash_v2_5
       - key: ELEVENLABS_ENABLE_LOGGING
