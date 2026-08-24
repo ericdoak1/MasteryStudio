@@ -54,7 +54,7 @@ services:
       - key: OPENAI_VOICE
         value: marin
       - key: OPENAI_TEXT_MODEL
-        value: gpt-5-mini
+        value: gpt-4.1-mini
       - key: ELEVENLABS_VOICE_ID
         value: S9EGwlCtMF7VXtENq79v
       - key: ELEVENLABS_TTS_MODEL
